@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+
+const { readFileSync } = require('fs')
+const request = require('superagent')
+const tw = require('taskwarrior')
+
+// Open up the .taskrc config file, likely at ~/.taskrc
+const config = readFileSync(process.argv[5].split(':')[1], 'utf8')
+const configLines = config.split('\n')
+
+// Get the config line beginning with `wip.api_key`
+const wipAPIKey = configLines.filter((line) => {
+  return line.split('=')[0] === 'wip.api_key'
+})[0].split('=')[1]
+
+process.stdin.on('readable', () => {
+  const chunk = JSON.parse(process.stdin.read())
+
+  if (chunk !== null) {
+    // Add the todo to WIP
+    request.post('https://wip.chat/graphql')
+      .set('Authorization', `bearer ${wipAPIKey}`)
+      .send({
+        // The ternary only adds the hashtag if the task has a project
+        query: `mutation {
+          createTodo(input: { body: "${chunk.description}${chunk.project ? ' #' + chunk.project : ''}"}) {
+            id
+          }
+        }`
+      })
+      .end((err, resp) => {
+        if (resp.statusCode == 200) {
+          // Set the WIP ID to the task so we can reference it later
+          chunk.wipId = resp.body.data.createTodo.id
+          return process.stdout.write(JSON.stringify(chunk))
+        } else {
+          return process.exit(1)
+        }
+      })
+  }
+})

@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+
+const { readFileSync } = require('fs')
+const request = require('superagent')
+const tw = require('taskwarrior')
+
+// Open up the .taskrc config file, likely at ~/.taskrc
+const config = readFileSync(process.argv[5].split(':')[1], 'utf8')
+const configLines = config.split('\n')
+
+// Get the line beginning with `wip.api_key`
+const wipAPIKey = configLines.filter((line) => {
+  return line.split('=')[0] === 'wip.api_key'
+})[0].split('=')[1]
+
+process.stdin.on('data', (data) => {
+  let [ previous, current ] = data.toString().split('\n')
+
+  previous = JSON.parse(previous)
+  current = JSON.parse(current)
+
+  // On complete
+  if (previous.status === 'pending' && current.status === 'completed') {
+    request.post('https://wip.chat/graphql')
+      .set('Authorization', `bearer ${wipAPIKey}`)
+      .send({
+        query: `mutation {
+                  completeTodo(id: "${current.wipId}") {
+                    id
+                  }
+                }`
+      })
+      .end((err, resp) => {
+        if (resp.statusCode == 200) {
+          return process.stdout.write(JSON.stringify(current))
+        } else {
+          return process.exit(1)
+        }
+      })
+
+    // On delete
+  } else if (previous.status === 'pending' && current.status === 'deleted') {
+    request.post('https://wip.chat/graphql')
+      .set('Authorization', `bearer ${wipAPIKey}`)
+      .send({
+        query: `mutation {
+                  deleteTodo(id: "${current.wipId}")
+                }`
+      })
+      .end((err, resp) => {
+        if (resp.statusCode == 200) {
+          return process.stdout.write(JSON.stringify(current))
+        } else {
+          return process.exit(1)
+        }
+      })
+    // On Modify, current should only have what has changed but just to be safe, check equality as well
+  } else if ((current.description && previous.description !== current.description) || (current.project && previous.project !== current.project)) {
+    request.post('https://wip.chat/graphql')
+      .set('Authorization', `bearer ${wipAPIKey}`)
+      .send({
+        // The long ternary is for only adding the hashtag if the task has a project, otherwise it's just the body
+        query: `mutation {
+                  updateTodoBody(id: "${current.wipId}", input: { body: "${current.description || previous.description}${(current.project || previous.project) ? ' #' + (current.project || previous.project) : ''}"}) {
+                    id
+                  }
+                }`
+      })
+      .end((err, resp) => {
+        if (resp.statusCode == 200) {
+          return process.stdout.write(JSON.stringify(current))
+        } else {
+          return process.exit(1)
+        }
+      })
+  } else {
+    return process.stdout.write(JSON.stringify(current))
+  }
+})
